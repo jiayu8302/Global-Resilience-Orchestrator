@@ -1,40 +1,49 @@
-# Deployment Reliability Engine (DRE)
+# Global Resilience Orchestrator (GRO)
 
 ## Overview
-The **Deployment Reliability Engine (DRE)** is a high-performance, cloud-native framework designed to automate the safety and integrity of software delivery pipelines. By serving as an intelligent "Go/No-Go" decision layer, DRE continuously monitors Service Level Indicators (SLIs) during canary rollouts and blue-green deployments. If anomalies are detected, the engine triggers automated fail-safes to halt deployments and minimize the blast radius of faulty updates.
+The **Global Resilience Orchestrator (GRO)** is a high-availability control plane designed to manage traffic distribution and service health across multi-region and multi-cloud environments. 
 
-## Key Capabilities
-* **Dynamic Gating**: Real-time evaluation of deployment health against configurable safety thresholds (Error Rates, Latency P99).
-* **Automated Rollback Trigger**: Dispatches immediate signals to orchestrators (Kubernetes, Azure DevOps) upon threshold breach.
-* **Statistical Anomaly Detection**: Identifies significant performance deviations compared to historical baselines.
-* **Pluggable Telemetry**: Native abstraction for industry-standard providers including Prometheus, Datadog, and OpenTelemetry.
+In an era where regional cloud outages can disrupt critical national infrastructure, GRO provides a vendor-agnostic abstraction layer that automates regional failover. By utilizing intelligent steering algorithms and concurrent health probing, GRO ensures that users are always routed to the most resilient and highest-performing infrastructure nodes.
+
+## Key Features
+* **Intelligent Traffic Steering**: Moves beyond simple round-robin to use latency-weighted and load-aware selection algorithms.
+* **Concurrent Health Probing**: A high-performance monitoring engine utilizing a worker-pool pattern to scale across thousands of regional endpoints.
+* **Vendor-Agnostic Design**: Built to integrate with Azure, AWS, and GCP, preventing single-provider lock-in.
+* **Panic Threshold Protection**: Advanced safety logic that prevents "thundering herd" effects by halting automated failover during global instability.
+
+## Project Architecture
+The system is built on a modular "Observe-Analyze-Act" loop:
+
+1.  **Observe**: Parallel probes collect real-time telemetry (Latency, Capacity, Health).
+2.  **Analyze**: The Strategy Engine ranks regions based on a multi-variable cost function.
+3.  **Act**: The Orchestrator updates routing tables (DNS/Service Mesh) to steer traffic to optimal regions.
+
+
 
 ## 🚀 Project Roadmap
 
-### Phase 1: Core Analysis & Gating Foundation (Current)
-*Focus: Establishing the decision engine and metric abstraction.*
-- [x] **Project Scaffolding**: Standard Go project structure and core configuration models.
-- [x] **Metric Provider Abstraction**: Interface-driven design for pluggable telemetry sources.
-- [x] **Static Gating Logic**: Implementation of threshold-based analysis for core SLIs.
-- [ ] **Mock Telemetry Suite**: Local simulation environment for stress-testing gating logic.
+### Phase 1: Core Framework & Resilience Foundation (Complete)
+- [x] **Standardized Scaffolding**: Implementation of Go-standard project layout and core API models.
+- [x] **Worker-Pool Prober**: High-concurrency health monitoring engine with context-aware timeouts.
+- [x] **Latency-Weighted Strategy**: Scoring algorithm to optimize user experience based on real-time network conditions.
+- [x] **Thread-Safe State Management**: Centralized monitor engine for global infrastructure telemetry.
 
-### Phase 2: Intelligence & Risk Mitigation
-*Focus: Advanced detection algorithms and pipeline integration.*
-- [ ] **Sliding-Window Analysis**: Implementation of moving-average error detection to filter out transient noise.
-- [ ] **Webhooks & Notification Hub**: Out-of-the-box support for Slack/Teams alerts and CI/CD webhook triggers.
-- [ ] **Historical Benchmarking**: Logic to compare current canary performance against the previous "Known Good" stable version.
+### Phase 2: Intelligence & Advanced Steering
+- [ ] **Dynamic "Panic" Thresholds**: Logic to prevent cascading failures during widespread network partitions.
+- [ ] **Anomaly Detection**: Statistical identification of "flapping" regions to avoid premature traffic shifts.
+- [ ] **Adaptive Load Shifting**: Real-time weight adjustments based on node saturation (CPU/Memory).
 
-### Phase 3: Enterprise Automation & Ecosystem
-*Focus: Scalability and cross-platform orchestration.*
-- [ ] **Kubernetes Custom Resource (CRD)**: Native K8s operator support for managing gates via YAML.
-- [ ] **mTLS Security**: Encrypted communication between the engine and distributed metric collectors.
-- [ ] **Dashboarding**: Pre-built Grafana templates for visualizing gate status and rollout health.
+### Phase 3: Ecosystem Integration & Enterprise Scale
+- [ ] **Multi-Cloud Adapters**: Native support for Azure Resource Graph and AWS Route53.
+- [ ] **Service Mesh Integration**: Support for Istio/Linkerd via xDS APIs for L7 traffic splitting.
+- [ ] **Observability Suite**: Exporting metrics via OpenTelemetry and Prometheus.
 
-## Getting Started
+## Installation & Usage
+
 ### Prerequisites
-- Go 1.21+
+* Go 1.21+
 
-### Installation
+### Build
 ```bash
 go mod download
-go build -o dre ./cmd/gatekeeper
+go build -o gro ./cmd/gro-manager
