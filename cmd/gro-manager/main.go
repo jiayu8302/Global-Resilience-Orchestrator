@@ -11,12 +11,19 @@ import (
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/api"
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/monitor"
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/strategy"
+	"gopkg.in/yaml.v3"
 )
 
-// MockActuator simulates an external infrastructure controller (e.g., Azure Traffic Manager API).
+// Config represents the root configuration structure
+type Config struct {
+	PanicThreshold     float64      `yaml:"panic_threshold"`
+	CheckInterval      string       `yaml:"check_interval"` // Parsed as string then converted to time.Duration
+	EvaluationInterval string       `yaml:"evaluation_interval"`
+	Regions            []api.Region `yaml:"regions"`
+}
+
 type MockActuator struct{}
 
-// ApplyRoutingChange updates the traffic distribution rules on the simulated cloud provider.
 func (m *MockActuator) ApplyRoutingChange(ctx context.Context, update api.RoutingUpdate) error {
 	slog.Info("Executing traffic shift",
 		"target_region", update.TargetRegionID,
@@ -24,116 +31,98 @@ func (m *MockActuator) ApplyRoutingChange(ctx context.Context, update api.Routin
 	return nil
 }
 
+func loadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 func main() {
-	// Initialize structured JSON logging (Industry standard for cloud-native observability)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	slog.Info("Initializing GRO Control Plane", "pid", os.Getpid())
-
-	// 1. Define initial infrastructure topology.
-	// In production, this would be loaded from a configuration file or a database.
-	initialRegions := []api.Region{
-		{
-			ID:          "azure-us-east",
-			Provider:    "Azure",
-			Status:      api.StatusHealthy,
-			LatencyMs:   42,
-			CurrentLoad: 0.45,
-		},
-		{
-			ID:          "azure-us-west",
-			Provider:    "Azure",
-			Status:      api.StatusHealthy,
-			LatencyMs:   85,
-			CurrentLoad: 0.25,
-		},
-		{
-			ID:          "aws-eu-central",
-			Provider:    "AWS",
-			Status:      api.StatusHealthy,
-			LatencyMs:   150,
-			CurrentLoad: 0.10,
-		},
+	// 1. Load configuration from YAML
+	cfg, err := loadConfig("config.yaml")
+	if err != nil {
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
 
-	// 2. Setup context and signal handling for graceful shutdown.
+	// Parse durations from strings
+	checkDur, _ := time.ParseDuration(cfg.CheckInterval)
+	evalDur, _ := time.ParseDuration(cfg.EvaluationInterval)
+
+	slog.Info("GRO Control Plane initialized from config",
+		"regions_loaded", len(cfg.Regions),
+		"panic_threshold", cfg.PanicThreshold)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 3. Initialize core orchestration components.
+	// 2. Initialize orchestration components
 	monEngine := monitor.NewMonitoringEngine()
 	steeringStrategy := strategy.NewWeightedLatencyStrategy()
 	panicProtector := &strategy.PanicProtector{
-		Config: strategy.PanicThresholdConfig{MaxFailurePercentage: 0.6}, // Halt if > 60% failure
+		Config: strategy.PanicThresholdConfig{MaxFailurePercentage: cfg.PanicThreshold},
 	}
 	actuator := &MockActuator{}
 
-	// 4. Start the Observe Phase (Asynchronous health monitoring).
-	go monEngine.RunBackgroundMonitor(ctx, initialRegions, 10*time.Second)
+	// 3. Start Observe Phase (Monitoring)
+	go monEngine.RunBackgroundMonitor(ctx, cfg.Regions, checkDur)
 
-	// Listen for termination signals (Ctrl+C or Kill).
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 5. Initialize the Control Loop Ticker.
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(evalDur)
 	defer ticker.Stop()
 
-	// Track the last applied state to prevent redundant API calls (Flapping prevention).
 	var lastActiveRegionID string
 
-	slog.Info("GRO Control Plane is active. Global fleet monitoring engaged.")
-
-	// 6. Main Control Loop: Analyze & Act
 	for {
 		select {
 		case <-sigChan:
-			slog.Warn("Termination signal received. Cleaning up resources...")
+			slog.Warn("Termination signal received")
 			return
 		case <-ticker.C:
-			// Fetch the latest telemetry snapshot from the monitor engine.
 			currentRegions := monEngine.GetLatestState()
 			if len(currentRegions) == 0 {
-				slog.Debug("Waiting for monitor telemetry to populate...")
 				continue
 			}
 
-			// A. Safety Check (Analyze Phase)
-			// Check if the current global failure rate exceeds the safety threshold.
+			// Safety Gate
 			if err := panicProtector.ValidateSystemHealth(currentRegions); err != nil {
-				slog.Error("SYSTEM PANIC DETECTED", "details", err.Error())
+				slog.Error("SYSTEM PANIC", "details", err.Error())
 				continue
 			}
 
-			// B. Strategy Selection (Analyze Phase)
-			// Calculate the optimal region based on real-time latency and capacity.
+			// Intelligence Phase
 			best, err := steeringStrategy.SelectOptimalRegion(ctx, currentRegions)
 			if err != nil {
 				slog.Warn("Strategy evaluation failed", "error", err)
 				continue
 			}
 
-			// C. State Comparison (Analyze Phase)
-			// Only trigger the actuator if the optimal region has changed.
+			// State Check
 			if best.ID == lastActiveRegionID {
-				slog.Debug("Infrastructure state stable", "current_leader", best.ID)
 				continue
 			}
 
-			// D. Execution (Act Phase)
+			// Act Phase
 			update := api.RoutingUpdate{
 				TargetRegionID: best.ID,
 				TrafficWeight:  100,
-				ActionReason:   "Automatic failover: identified superior resilience target",
+				ActionReason:   "Optimal resilience target identified via config-driven topology",
 			}
 
 			if err := actuator.ApplyRoutingChange(ctx, update); err == nil {
-				// Successfully updated the data plane; store state.
 				lastActiveRegionID = best.ID
-				slog.Info("Resilience goal achieved", "active_region", best.ID)
-			} else {
-				slog.Error("Failed to apply routing change", "error", err)
+				slog.Info("Failover target reached", "region", best.ID)
 			}
 		}
 	}
