@@ -2,7 +2,7 @@ package monitor
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -27,14 +27,17 @@ func (e *MonitoringEngine) RunBackgroundMonitor(ctx context.Context, regions []a
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	slog.Debug("Background monitor started", "interval", interval.String())
+
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Info("Background monitor stopping...")
 			return
 		case <-ticker.C:
+			// Perform health checks
 			updated := e.checker.CheckAllRegions(ctx, regions)
 			e.updateState(updated)
-			log.Printf("[MONITOR] Health state refreshed. Active regions tracked: %d", len(updated))
 		}
 	}
 }
