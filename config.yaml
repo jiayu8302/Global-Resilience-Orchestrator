@@ -1,20 +1,24 @@
-# Global Resilience Orchestrator Configuration
-# Safety settings for the control plane
-panic_threshold: 0.6
-check_interval: "10s"
-evaluation_interval: "15s"
+# Global Resilience Orchestrator - Deployment Configuration
 
-# Infrastructure Topology
+# Target Cloud Provider: "azure", "aws", or "mock"
+cloud_provider: "azure"
+
+# Safety Guardrails
+panic_threshold: 0.6         # Stop automation if >60% of regions fail
+check_interval: "10s"        # How often to probe health
+evaluation_interval: "15s"   # How often to make steering decisions
+
+# Infrastructure Registry
 regions:
   - id: "azure-us-east"
     provider: "Azure"
-    latency_ms: 42
-    current_load: 0.45
+    latency_ms: 45
+    current_load: 0.30
   - id: "azure-us-west"
     provider: "Azure"
-    latency_ms: 85
-    current_load: 0.25
+    latency_ms: 82
+    current_load: 0.15
   - id: "aws-eu-central"
     provider: "AWS"
-    latency_ms: 150
-    current_load: 0.10
+    latency_ms: 140
+    current_load: 0.05

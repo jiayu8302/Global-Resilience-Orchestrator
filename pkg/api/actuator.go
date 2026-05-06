@@ -2,21 +2,26 @@ package api
 
 import (
 	"context"
+	"log/slog"
 )
 
-// RoutingUpdate encapsulated the decision made by the Strategy Engine.
-type RoutingUpdate struct {
-	TargetRegionID string `json:"target_region_id"`
-	TrafficWeight  int    `json:"traffic_weight"` // 0-100
-	ActionReason   string `json:"action_reason"`  // e.g., "Primary Region Overloaded"
+// Actuator is the interface for all cloud providers.
+type Actuator interface {
+	ApplyRoutingChange(ctx context.Context, update RoutingUpdate) error
+	GetCurrentRoutingState(ctx context.Context) (*RoutingUpdate, error)
 }
 
-// Actuator is the abstraction layer for applying traffic steering rules.
-// By defining this as an interface, GRO remains vendor-agnostic.
-type Actuator interface {
-	// ApplyRoutingChange pushes the new traffic configuration to the data plane.
-	ApplyRoutingChange(ctx context.Context, update RoutingUpdate) error
+// MockActuator provides a no-op implementation for testing and local dev.
+// This MUST be in the pkg/api package to be called as api.MockActuator.
+type MockActuator struct{}
 
-	// GetCurrentRoutingState retrieves what's currently active in the cloud/DNS.
-	GetCurrentRoutingState(ctx context.Context) (*RoutingUpdate, error)
+func (m *MockActuator) ApplyRoutingChange(ctx context.Context, update RoutingUpdate) error {
+	slog.Info("[MOCK] Routing update applied",
+		"target", update.TargetRegionID,
+		"reason", update.ActionReason)
+	return nil
+}
+
+func (m *MockActuator) GetCurrentRoutingState(ctx context.Context) (*RoutingUpdate, error) {
+	return &RoutingUpdate{TargetRegionID: "mock-region-1", TrafficWeight: 100}, nil
 }

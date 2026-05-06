@@ -30,3 +30,10 @@ type Endpoint struct {
 	Port     int    `json:"port"`
 	Protocol string `json:"protocol"` // http, https, tcp
 }
+
+// RoutingUpdate defines the intent sent to a cloud provider to shift traffic.
+type RoutingUpdate struct {
+	TargetRegionID string
+	TrafficWeight  int
+	ActionReason   string
+}

@@ -14,30 +14,36 @@ import (
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/api"
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/monitor"
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/observability"
+	"github.com/jiayu8302/global-resilience-orchestrator/pkg/providers/aws"
+	"github.com/jiayu8302/global-resilience-orchestrator/pkg/providers/azure"
 	"github.com/jiayu8302/global-resilience-orchestrator/pkg/strategy"
 	"gopkg.in/yaml.v3"
 )
 
-// ... [Keep Config and MockActuator structs as they were] ...
-
+// Config matches the structure of config.yaml
 type Config struct {
+	CloudProvider      string       `yaml:"cloud_provider"`
 	PanicThreshold     float64      `yaml:"panic_threshold"`
 	CheckInterval      string       `yaml:"check_interval"`
 	EvaluationInterval string       `yaml:"evaluation_interval"`
 	Regions            []api.Region `yaml:"regions"`
 }
 
-type MockActuator struct{}
-
-func (m *MockActuator) ApplyRoutingChange(ctx context.Context, update api.RoutingUpdate) error {
-	slog.Info("Executing traffic shift", "target", update.TargetRegionID)
-	return nil
+// NewActuator is the Factory that selects the cloud implementation at runtime.
+func NewActuator(providerType string) (api.Actuator, error) {
+	switch providerType {
+	case "azure":
+		return &azure.Actuator{ResourceGroup: "gro-production-rg", ProfileName: "global-fd"}, nil
+	case "aws":
+		return &aws.Actuator{HostedZoneID: "Z0987654321"}, nil
+	case "mock":
+		return &api.MockActuator{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported cloud provider: %s", providerType)
+	}
 }
 
-func (m *MockActuator) GetCurrentRoutingState(ctx context.Context) (*api.RoutingUpdate, error) {
-	return &api.RoutingUpdate{TargetRegionID: "azure-us-east", TrafficWeight: 100}, nil
-}
-
+// loadConfig handles YAML file ingestion with error wrapping.
 func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -50,58 +56,57 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// startInternalAPI launches the Health and Metrics endpoints.
 func startInternalAPI() {
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("UP")) // Ignoring byte count error is standard here
+		_, _ = w.Write([]byte("UP"))
 	})
 
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// FIX 1: Handled JSON encoding error
-		if err := json.NewEncoder(w).Encode(observability.DefaultMetrics); err != nil {
-			slog.Error("Failed to encode metrics", "error", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
+		_ = json.NewEncoder(w).Encode(observability.DefaultMetrics)
 	})
 
-	slog.Info("Internal API listening on :8080")
-	// FIX 2: Handled HTTP server startup error (it returns error if it fails to bind)
 	go func() {
+		slog.Info("Internal API listening on :8080")
 		if err := http.ListenAndServe(":8080", nil); err != nil && err != http.ErrServerClosed {
-			slog.Error("Internal API server failed", "error", err)
+			slog.Error("Metrics API failed", "error", err)
 			os.Exit(1)
 		}
 	}()
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
+	// 1. Initialization & Config
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.Info("🚀 GRO: Global Resilience Orchestrator Starting...")
 
 	cfg, err := loadConfig("config.yaml")
 	if err != nil {
-		slog.Error("Failed to load configuration", "error", err)
+		slog.Error("Bootstrap failed", "error", err)
 		os.Exit(1)
 	}
 
 	startInternalAPI()
 
-	// FIX 3: Handled time duration parsing errors (invalid strings in YAML)
-	checkDur, err := time.ParseDuration(cfg.CheckInterval)
+	// 2. Dependency Injection & Timing
+	checkDur, _ := time.ParseDuration(cfg.CheckInterval)
+	evalDur, _ := time.ParseDuration(cfg.EvaluationInterval)
+
+	// Load Provider via Factory
+	baseActuator, err := NewActuator(cfg.CloudProvider)
 	if err != nil {
-		slog.Error("Invalid check_interval in config", "val", cfg.CheckInterval, "error", err)
+		slog.Error("Provider initialization failed", "error", err)
 		os.Exit(1)
 	}
 
-	evalDur, err := time.ParseDuration(cfg.EvaluationInterval)
-	if err != nil {
-		slog.Error("Invalid evaluation_interval in config", "val", cfg.EvaluationInterval, "error", err)
-		os.Exit(1)
+	// Wrap in Robust Decorator for retries and fault tolerance
+	actuator := &api.RobustActuator{
+		Base:       baseActuator,
+		MaxRetries: 3,
+		RetryDelay: 1 * time.Second,
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	monEngine := monitor.NewMonitoringEngine()
 	steeringStrategy := strategy.NewWeightedLatencyStrategy()
@@ -109,14 +114,14 @@ func main() {
 		Config: strategy.PanicThresholdConfig{MaxFailurePercentage: cfg.PanicThreshold},
 	}
 
-	actuator := &api.RobustActuator{
-		Base:       &MockActuator{},
-		MaxRetries: 3,
-		RetryDelay: 1 * time.Second,
-	}
+	// 3. Orchestration Context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Start background monitoring of global fleet
 	go monEngine.RunBackgroundMonitor(ctx, cfg.Regions, checkDur)
 
+	// Graceful Shutdown handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -124,7 +129,7 @@ func main() {
 	defer ticker.Stop()
 
 	var lastActiveRegionID string
-	slog.Info("✅ GRO is active and monitoring global resilience...")
+	slog.Info("✅ GRO Active", "mode", cfg.CloudProvider, "regions_monitored", len(cfg.Regions))
 
 	for {
 		select {
@@ -139,20 +144,23 @@ func main() {
 				continue
 			}
 
+			// Safety Gate (Panic Threshold)
 			if err := panicProtector.ValidateSystemHealth(currentRegions); err != nil {
 				observability.DefaultMetrics.RecordPanic()
-				slog.Error("CRITICAL: Automation suspended", "details", err)
+				slog.Error("CRITICAL: Global Panic Threshold Breached", "details", err)
 				continue
 			}
 
+			// Select Optimal Target
 			best, err := steeringStrategy.SelectOptimalRegion(ctx, currentRegions)
 			if err != nil {
-				slog.Warn("Strategy evaluation failed", "error", err)
+				slog.Warn("No healthy target found", "error", err)
 				continue
 			}
 
 			observability.DefaultMetrics.UpdateLoad(best.ID, best.CurrentLoad)
 
+			// Only act if a change is actually required (Stability)
 			if best.ID == lastActiveRegionID {
 				continue
 			}
@@ -160,14 +168,14 @@ func main() {
 			update := api.RoutingUpdate{
 				TargetRegionID: best.ID,
 				TrafficWeight:  100,
-				ActionReason:   "Automatic failover: identified superior target",
+				ActionReason:   "Failover: superior target identified",
 			}
 
-			if err := actuator.ApplyRoutingChange(ctx, update); err != nil {
-				slog.Error("Failed to apply routing change", "error", err)
-			} else {
+			if err := actuator.ApplyRoutingChange(ctx, update); err == nil {
 				lastActiveRegionID = best.ID
 				observability.DefaultMetrics.RecordFailover()
+			} else {
+				slog.Error("Routing update failed", "target", best.ID, "error", err)
 			}
 		}
 	}
